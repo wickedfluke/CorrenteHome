@@ -34,7 +34,7 @@ BOT_TOKEN = "8768567297:AAFi2g7iKdDJKW349hO8PirzRZkMT7fb4Hw"
 API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 UPDATE_TIMEOUT_SECONDS = int(os.environ.get("TELEGRAM_POLL_TIMEOUT", "20"))
 MONITOR_INTERVAL_SECONDS = int(os.environ.get("MONITOR_INTERVAL_SECONDS", "30"))
-INTERNET_CHECK_URL = os.environ.get("INTERNET_CHECK_URL", "https://api.telegram.org")
+INTERNET_CHECK_URL = os.environ.get("INTERNET_CHECK_URL", "https://www.google.com/generate_204")
 INTERNET_CHECK_TIMEOUT = int(os.environ.get("INTERNET_CHECK_TIMEOUT", "5"))
 
 
@@ -281,20 +281,28 @@ def update_state_from_snapshot(state: BotState, snapshot: dict[str, Any]) -> Non
 
 
 def handle_modem_command(state: BotState, chat_id: int) -> None:
-	snapshot = snapshot_status()
-	update_state_from_snapshot(state, snapshot)
-	if snapshot["internet_ok"]:
-		text = "Modem funzionante"
-	else:
-		battery = snapshot.get("percentage")
-		charging = "in carica" if snapshot.get("charging") else "non in carica"
-		text = (
-			"Modem non funzionante\n"
-			f"Dettaglio rete: {snapshot.get('internet_detail')}\n"
-			f"Batteria: {battery if battery is not None else 'n/d'}%\n"
-			f"Stato alimentazione: {charging}"
-		)
-	send_message(chat_id, text)
+	try:
+		snapshot = snapshot_status()
+		update_state_from_snapshot(state, snapshot)
+		if snapshot["internet_ok"]:
+			text = "Modem funzionante"
+		else:
+			battery = snapshot.get("percentage")
+			charging = "in carica" if snapshot.get("charging") else "non in carica"
+			text = (
+				"Modem non funzionante\n"
+				f"Dettaglio rete: {snapshot.get('internet_detail')}\n"
+				f"Batteria: {battery if battery is not None else 'n/d'}%\n"
+				f"Stato alimentazione: {charging}"
+			)
+	except Exception as exc:
+		logger.exception("Errore durante /modem: %s", exc)
+		text = f"Impossibile verificare il modem: {exc}"
+
+	try:
+		send_message(chat_id, text)
+	except Exception as exc:
+		logger.warning("Impossibile inviare la risposta a /modem: %s", exc)
 	save_state(state)
 
 
