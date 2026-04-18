@@ -37,6 +37,7 @@ MONITOR_INTERVAL_SECONDS = int(os.environ.get("MONITOR_INTERVAL_SECONDS", "30"))
 INTERNET_CHECK_URL = os.environ.get("INTERNET_CHECK_URL", "https://www.google.com/generate_204")
 INTERNET_CHECK_TIMEOUT = int(os.environ.get("INTERNET_CHECK_TIMEOUT", "5"))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "DEBUG").upper()
+RESET_WEBHOOK_ON_START = os.environ.get("RESET_WEBHOOK_ON_START", "1") == "1"
 
 
 logging.basicConfig(
@@ -133,6 +134,30 @@ def send_message(chat_id: int, text: str) -> None:
 		timeout=20,
 	)
 	logger.debug("send_message ok chat_id=%s", chat_id)
+
+
+def ensure_telegram_polling_ready() -> None:
+	"""Verify token and disable webhook so getUpdates can receive /start and /modem."""
+	logger.info("Checking Telegram connectivity with getMe")
+	me = telegram_api("getMe", timeout=15)
+	logger.info(
+		"Telegram bot authenticated id=%s username=%s",
+		me.get("id"),
+		me.get("username"),
+	)
+
+	if RESET_WEBHOOK_ON_START:
+		logger.info("RESET_WEBHOOK_ON_START=1, deleting webhook for long polling")
+		result = telegram_api("deleteWebhook", {"drop_pending_updates": False}, timeout=15)
+		logger.info("deleteWebhook result=%s", result)
+
+	webhook = telegram_api("getWebhookInfo", timeout=15)
+	logger.info(
+		"Webhook info url=%r pending_update_count=%s last_error_message=%r",
+		webhook.get("url"),
+		webhook.get("pending_update_count"),
+		webhook.get("last_error_message"),
+	)
 
 
 def send_to_known_chats(state: "BotState", text: str) -> None:
@@ -399,7 +424,9 @@ def telegram_poll_loop(state: BotState) -> None:
 				finally:
 					save_state(state)
 		except Exception as exc:
-			logger.warning("Polling Telegram non disponibile: %s", exc)
+			logger.warning("Polling Telegram non disponibile: %r", exc)
+			if "terminated by other getUpdates request" in str(exc):
+				logger.warning("Conflitto getUpdates: c'e' un altro processo bot attivo con lo stesso token")
 			time.sleep(5)
 
 
@@ -511,6 +538,7 @@ def monitor_loop(state: BotState) -> None:
 
 def main() -> None:
 	logger.info("CorrenteBot starting")
+	ensure_telegram_polling_ready()
 	state = load_state()
 	logger.info("Bot avviato. Chat registrate: %s", sorted(state.chat_ids))
 
