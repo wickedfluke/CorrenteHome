@@ -102,6 +102,9 @@ def monitor(app):
             online = check_internet()
             print("CHECK:", online)
 
+            # -----------------------
+            # INTERNET TORNA
+            # -----------------------
             if online:
                 if not last_online:
                     down_end = datetime.now()
@@ -109,37 +112,34 @@ def monitor(app):
 
                     batt_now, plugged_now = get_battery()
 
+                    # 👉 LOG SEMPRE PRIMA
                     add_log({
                         "start": down_start.strftime("%Y-%m-%d %H:%M:%S"),
                         "end": down_end.strftime("%Y-%m-%d %H:%M:%S"),
-                        "duration": duration,
-                        "battery_start": battery_start,
-                        "battery_end": batt_now,
-                        "plugged_start": battery_start[1] if battery_start else None,
-                        "plugged_end": plugged_now
+                        "duration": duration
                     })
 
-                    msg = (
-                        f"🟢 Internet tornato\n"
-                        f"⏱ Durata: {duration} sec\n"
-                    )
+                    msg = f"🟢 Internet tornato\n⏱ {duration}s\n"
 
-                    if battery_start and batt_now:
-                        msg += f"🔋 Batteria: {battery_start[0]}% → {batt_now}%\n"
+                    # batteria (safe)
+                    if battery_start and batt_now is not None:
+                        msg += f"🔋 {battery_start[0]}% → {batt_now}%\n"
 
-                        if battery_start[1] and not plugged_now:
-                            msg += "⚡ Possibile blackout\n"
-                        else:
-                            msg += "🌐 Probabile problema rete\n"
-
+                    # -----------------------
+                    # TELEGRAM SAFE SEND
+                    # -----------------------
                     for uid in get_users():
                         try:
-                            app.bot.send_message(chat_id=uid, text=msg)
-                        except:
-                            pass
+                            app.bot.send_message(chat_id=uid, text=msg, timeout=5)
+                        except Exception as e:
+                            print("Telegram error:", e)
+                            continue
 
                     last_online = True
 
+            # -----------------------
+            # INTERNET CADE
+            # -----------------------
             else:
                 if last_online:
                     down_start = datetime.now()
@@ -147,7 +147,7 @@ def monitor(app):
                     last_online = False
 
         except Exception as e:
-            print("MONITOR ERROR:", e)
+            print("MONITOR CRASH:", e)
 
         time.sleep(CHECK_INTERVAL)
 
