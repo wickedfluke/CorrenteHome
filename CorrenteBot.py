@@ -106,66 +106,60 @@ async def graph(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MONITOR LOOP
 # -----------------------
 
-async def monitor(app):
-    last_online = True
-    down_start = None
-    battery_start = None
+import threading
 
-    while True:
-        online = check_internet()
+def start_monitor(app):
+    import asyncio
 
-        if online:
-            if not last_online:
-                down_end = datetime.now()
-                duration = int((down_end - down_start).total_seconds())
+    async def monitor():
+        last_online = True
+        down_start = None
+        battery_start = None
 
-                batt_now, plugged_now = get_battery()
+        while True:
+            online = check_internet()
+            print("CHECK:", online)
 
-                msg = f"🟢 Internet tornato\n"
-                msg += f"⏱ Down: {down_start} → {down_end}\n"
-                msg += f"⌛ Durata: {duration} sec\n"
+            if online:
+                if not last_online:
+                    down_end = datetime.now()
+                    duration = int((down_end - down_start).total_seconds())
 
-                if battery_start:
-                    b_start, p_start = battery_start
-                    msg += f"🔋 Batteria: {b_start}% → {batt_now}%\n"
+                    add_log({
+                        "start": down_start.strftime("%Y-%m-%d %H:%M:%S"),
+                        "end": down_end.strftime("%Y-%m-%d %H:%M:%S"),
+                        "duration": duration
+                    })
 
-                    if p_start and not plugged_now:
-                        msg += "⚡ Probabile blackout\n"
-                    else:
-                        msg += "🌐 Probabile problema rete\n"
+                    users = load_json(USERS_FILE, [])
+                    for uid in users:
+                        await app.bot.send_message(
+                            chat_id=uid,
+                            text=f"🟢 Internet tornato\nDurata down: {duration}s"
+                        )
 
-                await send_all(app, msg)
+                    last_online = True
 
-                add_log({
-                    "start": down_start.strftime("%Y-%m-%d %H:%M:%S"),
-                    "end": down_end.strftime("%Y-%m-%d %H:%M:%S"),
-                    "duration": duration
-                })
+            else:
+                if last_online:
+                    down_start = datetime.now()
+                    battery_start = get_battery()
+                    last_online = False
 
-                last_online = True
+            await asyncio.sleep(30)
 
-        else:
-            if last_online:
-                down_start = datetime.now()
-                battery_start = get_battery()
-                last_online = False
-
-        await asyncio.sleep(CHECK_INTERVAL)
+    asyncio.run(monitor())
 
 # -----------------------
 # MAIN
 # -----------------------
 
-import asyncio
-
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("modem", modem))
-    app.add_handler(CommandHandler("graph", graph))
 
-    import asyncio
-    asyncio.get_event_loop().create_task(monitor(app))
+    threading.Thread(target=start_monitor, args=(app,), daemon=True).start()
 
     print("Bot avviato...")
     app.run_polling()
