@@ -30,11 +30,8 @@ BASE_DIR = Path(__file__).resolve().parent
 LOG_FILE = BASE_DIR / "CorrenteBot.log"
 STATE_FILE = BASE_DIR / "CorrenteBot.state.json"
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-if not BOT_TOKEN:
-	raise SystemExit("Imposta la variabile d'ambiente TELEGRAM_BOT_TOKEN con il token del bot.")
-
-API_BASE = f"https://api.telegram.org/bot8768567297:AAFi2g7iKdDJKW349hO8PirzRZkMT7fb4Hw"
+BOT_TOKEN = "8768567297:AAFi2g7iKdDJKW349hO8PirzRZkMT7fb4Hw"
+API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 UPDATE_TIMEOUT_SECONDS = int(os.environ.get("TELEGRAM_POLL_TIMEOUT", "20"))
 MONITOR_INTERVAL_SECONDS = int(os.environ.get("MONITOR_INTERVAL_SECONDS", "30"))
 INTERNET_CHECK_URL = os.environ.get("INTERNET_CHECK_URL", "https://api.telegram.org")
