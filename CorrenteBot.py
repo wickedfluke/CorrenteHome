@@ -1,0 +1,203 @@
+import requests
+import time
+import json
+import subprocess
+from datetime import datetime
+import matplotlib.pyplot as plt
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+TOKEN = "8768567297:AAFi2g7iKdDJKW349hO8PirzRZkMT7fb4Hw"
+CHECK_INTERVAL = 30  # secondi
+LOG_FILE = "log.json"
+USERS_FILE = "users.json"
+
+# -----------------------
+# Utility
+# -----------------------
+
+def now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def load_json(file, default):
+    try:
+        with open(file, "r") as f:
+            return json.load(f)
+    except:
+        return default
+
+def save_json(file, data):
+    with open(file, "w") as f:
+        json.dump(data, f, indent=2)
+
+# -----------------------
+# Batteria
+# -----------------------
+
+def get_battery():
+    try:
+        result = subprocess.check_output(["termux-battery-status"])
+        data = json.loads(result)
+        return data["percentage"], data["plugged"]
+    except:
+        return None, None
+
+# -----------------------
+# Internet check
+# -----------------------
+
+def check_internet():
+    try:
+        requests.get("https://8.8.8.8", timeout=3)
+        return True
+    except:
+        return False
+
+# -----------------------
+# Telegram utenti
+# -----------------------
+
+def add_user(user_id):
+    users = load_json(USERS_FILE, [])
+    if user_id not in users:
+        users.append(user_id)
+        save_json(USERS_FILE, users)
+
+async def send_all(app, text):
+    users = load_json(USERS_FILE, [])
+    for uid in users:
+        try:
+            await app.bot.send_message(chat_id=uid, text=text)
+        except:
+            pass
+
+# -----------------------
+# Log downtime
+# -----------------------
+
+def add_log(entry):
+    logs = load_json(LOG_FILE, [])
+    logs.append(entry)
+    save_json(LOG_FILE, logs)
+
+# -----------------------
+# Grafico
+# -----------------------
+
+def generate_graph():
+    logs = load_json(LOG_FILE, [])
+    if not logs:
+        return None
+
+    durations = []
+    labels = []
+
+    for i, log in enumerate(logs[-20:]):  # ultimi 20 eventi
+        durations.append(log["duration"])
+        labels.append(str(i+1))
+
+    plt.figure()
+    plt.bar(labels, durations)
+    plt.xlabel("Eventi")
+    plt.ylabel("Durata (secondi)")
+    plt.title("Downtime recenti")
+
+    file = "graph.png"
+    plt.savefig(file)
+    plt.close()
+
+    return file
+
+# -----------------------
+# BOT COMMANDS
+# -----------------------
+
+async def modem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    add_user(update.effective_user.id)
+
+    online = check_internet()
+
+    if online:
+        await update.message.reply_text("✅ Internet attivo")
+    else:
+        await update.message.reply_text("❌ Internet NON disponibile")
+
+async def graph(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    add_user(update.effective_user.id)
+
+    file = generate_graph()
+    if file:
+        await context.bot.send_photo(chat_id=update.effective_user.id, photo=open(file, "rb"))
+    else:
+        await update.message.reply_text("Nessun dato disponibile")
+
+# -----------------------
+# MONITOR LOOP
+# -----------------------
+
+async def monitor(app):
+    last_online = True
+    down_start = None
+    battery_start = None
+
+    while True:
+        online = check_internet()
+
+        if online:
+            if not last_online:
+                down_end = datetime.now()
+                duration = int((down_end - down_start).total_seconds())
+
+                batt_now, plugged_now = get_battery()
+
+                msg = f"🟢 Internet tornato\n"
+                msg += f"⏱ Down: {down_start} → {down_end}\n"
+                msg += f"⌛ Durata: {duration} sec\n"
+
+                if battery_start:
+                    b_start, p_start = battery_start
+                    msg += f"🔋 Batteria: {b_start}% → {batt_now}%\n"
+
+                    if p_start and not plugged_now:
+                        msg += "⚡ Probabile blackout\n"
+                    else:
+                        msg += "🌐 Probabile problema rete\n"
+
+                await send_all(app, msg)
+
+                add_log({
+                    "start": down_start.strftime("%Y-%m-%d %H:%M:%S"),
+                    "end": down_end.strftime("%Y-%m-%d %H:%M:%S"),
+                    "duration": duration
+                })
+
+                last_online = True
+
+        else:
+            if last_online:
+                down_start = datetime.now()
+                battery_start = get_battery()
+                last_online = False
+
+        await asyncio.sleep(CHECK_INTERVAL)
+
+# -----------------------
+# MAIN
+# -----------------------
+
+import asyncio
+
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("modem", modem))
+    app.add_handler(CommandHandler("graph", graph))
+
+    # avvia monitor in background
+    asyncio.create_task(monitor(app))
+
+    print("Bot avviato...")
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
