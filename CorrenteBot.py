@@ -3,7 +3,6 @@ import time
 import json
 import subprocess
 from datetime import datetime
-import matplotlib.pyplot as plt
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -79,34 +78,6 @@ def add_log(entry):
     logs = load_json(LOG_FILE, [])
     logs.append(entry)
     save_json(LOG_FILE, logs)
-
-# -----------------------
-# Grafico
-# -----------------------
-
-def generate_graph():
-    logs = load_json(LOG_FILE, [])
-    if not logs:
-        return None
-
-    durations = []
-    labels = []
-
-    for i, log in enumerate(logs[-20:]):  # ultimi 20 eventi
-        durations.append(log["duration"])
-        labels.append(str(i+1))
-
-    plt.figure()
-    plt.bar(labels, durations)
-    plt.xlabel("Eventi")
-    plt.ylabel("Durata (secondi)")
-    plt.title("Downtime recenti")
-
-    file = "graph.png"
-    plt.savefig(file)
-    plt.close()
-
-    return file
 
 # -----------------------
 # BOT COMMANDS
