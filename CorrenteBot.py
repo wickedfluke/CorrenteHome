@@ -158,17 +158,17 @@ async def monitor(app):
 
 import asyncio
 
-async def main():
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("modem", modem))
     app.add_handler(CommandHandler("graph", graph))
 
-    # avvia monitor in background
-    asyncio.create_task(monitor(app))
+    import asyncio
+    asyncio.get_event_loop().create_task(monitor(app))
 
     print("Bot avviato...")
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
