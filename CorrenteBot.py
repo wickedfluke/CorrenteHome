@@ -36,10 +36,11 @@ UPDATE_TIMEOUT_SECONDS = int(os.environ.get("TELEGRAM_POLL_TIMEOUT", "20"))
 MONITOR_INTERVAL_SECONDS = int(os.environ.get("MONITOR_INTERVAL_SECONDS", "30"))
 INTERNET_CHECK_URL = os.environ.get("INTERNET_CHECK_URL", "https://www.google.com/generate_204")
 INTERNET_CHECK_TIMEOUT = int(os.environ.get("INTERNET_CHECK_TIMEOUT", "5"))
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "DEBUG").upper()
 
 
 logging.basicConfig(
-	level=logging.INFO,
+	level=getattr(logging, LOG_LEVEL, logging.DEBUG),
 	format="%(asctime)s %(levelname)s %(message)s",
 	handlers=[
 		logging.FileHandler(LOG_FILE, encoding="utf-8"),
@@ -82,16 +83,20 @@ def safe_int(value: Any, default: int | None = None) -> int | None:
 
 
 def http_get(url: str, timeout: int) -> tuple[bool, int | None, str]:
+	logger.debug("HTTP GET start url=%s timeout=%s", url, timeout)
 	request = urllib.request.Request(url, headers={"User-Agent": "CorrenteBot/1.0"})
 	try:
 		with urllib.request.urlopen(request, timeout=timeout) as response:
 			body = response.read(256).decode("utf-8", errors="replace")
+			logger.debug("HTTP GET ok url=%s status=%s body_preview=%r", url, response.status, body[:120])
 			return True, response.status, body
 	except Exception as exc:  # broad on purpose: network failures are expected
+		logger.debug("HTTP GET failed url=%s error=%s", url, exc)
 		return False, None, str(exc)
 
 
 def telegram_api(method: str, params: dict[str, Any] | None = None, timeout: int = 20) -> Any:
+	logger.debug("Telegram API call start method=%s timeout=%s params=%s", method, timeout, sorted((params or {}).keys()))
 	data = None
 	url = f"{API_BASE}/{method}"
 	headers = {"User-Agent": "CorrenteBot/1.0"}
@@ -101,15 +106,23 @@ def telegram_api(method: str, params: dict[str, Any] | None = None, timeout: int
 		headers["Content-Type"] = "application/x-www-form-urlencoded"
 
 	request = urllib.request.Request(url, data=data, headers=headers)
-	with urllib.request.urlopen(request, timeout=timeout) as response:
-		payload = response.read().decode("utf-8")
+	try:
+		with urllib.request.urlopen(request, timeout=timeout) as response:
+			payload = response.read().decode("utf-8")
+			logger.debug("Telegram API response method=%s payload_preview=%r", method, payload[:240])
+	except Exception as exc:
+		logger.exception("Telegram API transport failure method=%s error=%s", method, exc)
+		raise
 	result = json.loads(payload)
 	if not result.get("ok"):
+		logger.error("Telegram API not ok method=%s result=%s", method, result)
 		raise RuntimeError(f"Telegram API error: {result}")
+	logger.debug("Telegram API call ok method=%s", method)
 	return result["result"]
 
 
 def send_message(chat_id: int, text: str) -> None:
+	logger.debug("send_message start chat_id=%s text_preview=%r", chat_id, text[:240])
 	telegram_api(
 		"sendMessage",
 		{
@@ -119,11 +132,14 @@ def send_message(chat_id: int, text: str) -> None:
 		},
 		timeout=20,
 	)
+	logger.debug("send_message ok chat_id=%s", chat_id)
 
 
 def send_to_known_chats(state: "BotState", text: str) -> None:
+	logger.info("Broadcast to %s chats: %s", len(state.chat_ids), text.splitlines()[0] if text else "<empty>")
 	for chat_id in sorted(state.chat_ids):
 		try:
+			logger.debug("Broadcasting to chat_id=%s", chat_id)
 			send_message(chat_id, text)
 		except Exception as exc:
 			logger.warning("Invio fallito a chat %s: %s", chat_id, exc)
@@ -220,7 +236,9 @@ class BotState:
 
 
 def load_state() -> BotState:
+	logger.debug("Loading state from %s", STATE_FILE)
 	if not STATE_FILE.exists():
+		logger.debug("State file missing, starting fresh")
 		return BotState()
 	try:
 		data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -241,10 +259,12 @@ def load_state() -> BotState:
 	state.last_charging = data.get("last_charging")
 	state.last_power_state = data.get("last_power_state")
 	state.last_status_snapshot = dict(data.get("last_status_snapshot", {}))
+	logger.info("State loaded chats=%s pending=%s last_update_id=%s internet_up=%s", len(state.chat_ids), len(state.pending_messages), state.last_update_id, state.internet_up)
 	return state
 
 
 def save_state(state: BotState) -> None:
+	logger.debug("Saving state chats=%s pending=%s last_update_id=%s internet_up=%s", len(state.chat_ids), len(state.pending_messages), state.last_update_id, state.internet_up)
 	payload = {
 		"chat_ids": sorted(state.chat_ids),
 		"pending_messages": state.pending_messages,
@@ -260,20 +280,33 @@ def save_state(state: BotState) -> None:
 		"last_status_snapshot": state.last_status_snapshot,
 	}
 	STATE_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+	logger.debug("State saved to %s", STATE_FILE)
 
 
 def snapshot_status() -> dict[str, Any]:
+	logger.debug("Creating status snapshot")
 	internet_ok, internet_detail = detect_internet()
 	power = detect_power_and_battery()
-	return {
+	snapshot = {
 		"timestamp": now_iso(),
 		"internet_ok": internet_ok,
 		"internet_detail": internet_detail,
 		**power,
 	}
+	logger.info(
+		"Snapshot internet_ok=%s detail=%s battery=%s charging=%s power_state=%s source=%s",
+		snapshot.get("internet_ok"),
+		snapshot.get("internet_detail"),
+		snapshot.get("percentage"),
+		snapshot.get("charging"),
+		snapshot.get("status"),
+		snapshot.get("source"),
+	)
+	return snapshot
 
 
 def update_state_from_snapshot(state: BotState, snapshot: dict[str, Any]) -> None:
+	logger.debug("Updating state from snapshot timestamp=%s", snapshot.get("timestamp"))
 	state.last_status_snapshot = snapshot
 	state.last_battery_percentage = snapshot.get("percentage")
 	state.last_charging = snapshot.get("charging")
@@ -281,6 +314,7 @@ def update_state_from_snapshot(state: BotState, snapshot: dict[str, Any]) -> Non
 
 
 def handle_modem_command(state: BotState, chat_id: int) -> None:
+	logger.info("/modem requested chat_id=%s", chat_id)
 	try:
 		snapshot = snapshot_status()
 		update_state_from_snapshot(state, snapshot)
@@ -300,6 +334,7 @@ def handle_modem_command(state: BotState, chat_id: int) -> None:
 		text = f"Impossibile verificare il modem: {exc}"
 
 	try:
+		logger.debug("Sending /modem response chat_id=%s text=%r", chat_id, text)
 		send_message(chat_id, text)
 	except Exception as exc:
 		logger.warning("Impossibile inviare la risposta a /modem: %s", exc)
@@ -307,15 +342,21 @@ def handle_modem_command(state: BotState, chat_id: int) -> None:
 
 
 def handle_start_command(state: BotState, chat_id: int) -> None:
+	logger.info("/start requested chat_id=%s", chat_id)
 	state.chat_ids.add(chat_id)
-	send_message(chat_id, "Chat registrata. Usero' questo chat id per gli avvisi e il comando /modem.")
+	try:
+		send_message(chat_id, "Chat registrata. Usero' questo chat id per gli avvisi e il comando /modem.")
+	except Exception as exc:
+		logger.warning("Impossibile inviare conferma /start a chat_id=%s: %s", chat_id, exc)
 	save_state(state)
 
 
 def process_update(state: BotState, update: dict[str, Any]) -> None:
+	logger.debug("Processing update raw=%s", update)
 	update_id = update.get("update_id")
 	if isinstance(update_id, int):
 		state.last_update_id = update_id
+		logger.debug("Updated last_update_id=%s", state.last_update_id)
 
 	message = update.get("message") or update.get("edited_message")
 	if not isinstance(message, dict):
@@ -326,23 +367,30 @@ def process_update(state: BotState, update: dict[str, Any]) -> None:
 	if not isinstance(chat_id, int):
 		return
 
+	logger.info("Incoming message chat_id=%s text=%r", chat_id, (message.get("text") or ""))
 	state.chat_ids.add(chat_id)
 	text = (message.get("text") or "").strip()
 	if text.startswith("/start"):
+		logger.debug("Dispatching /start for chat_id=%s", chat_id)
 		handle_start_command(state, chat_id)
 	elif text.startswith("/modem"):
+		logger.debug("Dispatching /modem for chat_id=%s", chat_id)
 		handle_modem_command(state, chat_id)
 	else:
+		logger.debug("No command matched for chat_id=%s", chat_id)
 		save_state(state)
 
 
 def telegram_poll_loop(state: BotState) -> None:
+	logger.info("Telegram poll loop started timeout=%s", UPDATE_TIMEOUT_SECONDS)
 	while True:
 		try:
 			params: dict[str, Any] = {"timeout": UPDATE_TIMEOUT_SECONDS}
 			if state.last_update_id is not None:
 				params["offset"] = state.last_update_id + 1
+			logger.debug("Polling Telegram with params=%s", params)
 			updates = telegram_api("getUpdates", params, timeout=UPDATE_TIMEOUT_SECONDS + 10)
+			logger.info("Telegram updates received count=%s", len(updates))
 			for update in updates:
 				try:
 					process_update(state, update)
@@ -356,6 +404,7 @@ def telegram_poll_loop(state: BotState) -> None:
 
 
 def build_outage_message(state: BotState, snapshot: dict[str, Any], event: str) -> str:
+	logger.debug("Building outage message event=%s snapshot=%s", event, snapshot)
 	battery = snapshot.get("percentage")
 	charging = "in carica" if snapshot.get("charging") else "non in carica"
 	return (
@@ -368,8 +417,10 @@ def build_outage_message(state: BotState, snapshot: dict[str, Any], event: str) 
 
 
 def monitor_loop(state: BotState) -> None:
+	logger.info("Monitor loop started interval=%s", MONITOR_INTERVAL_SECONDS)
 	while True:
 		try:
+			logger.debug("Monitor cycle start internet_up=%s last_down_since=%s", state.internet_up, state.internet_down_since)
 			snapshot = snapshot_status()
 			update_state_from_snapshot(state, snapshot)
 
@@ -380,13 +431,16 @@ def monitor_loop(state: BotState) -> None:
 
 			if state.internet_up is None:
 				state.internet_up = internet_ok
+				logger.debug("Initializing internet state to %s", internet_ok)
 				if not internet_ok:
+					logger.info("Internet initially down at %s", snapshot["timestamp"])
 					state.internet_down_since = snapshot["timestamp"]
 					state.internet_down_battery = current_battery
 					state.internet_down_charging = current_charging
 					state.internet_down_power_state = current_power_state
 
 			elif state.internet_up and not internet_ok:
+				logger.info("Internet transition up -> down at %s", snapshot["timestamp"])
 				state.internet_up = False
 				state.internet_down_since = snapshot["timestamp"]
 				state.internet_down_battery = current_battery
@@ -397,6 +451,7 @@ def monitor_loop(state: BotState) -> None:
 				send_to_known_chats(state, message)
 
 			elif not state.internet_up and internet_ok:
+				logger.info("Internet transition down -> up at %s", snapshot["timestamp"])
 				state.internet_up = True
 				recovered_at = datetime.fromisoformat(snapshot["timestamp"])
 				started_at = parse_iso(state.internet_down_since) or recovered_at
@@ -425,11 +480,13 @@ def monitor_loop(state: BotState) -> None:
 				state.internet_down_power_state = None
 
 			elif not internet_ok and state.internet_down_since:
+				logger.debug("Internet still down; checking battery and power deltas")
 				previous_battery = state.internet_down_battery
 				previous_charging = state.internet_down_charging
 				battery_changed = previous_battery is not None and current_battery is not None and current_battery < previous_battery
 				charging_changed = previous_charging is not None and current_charging is not None and current_charging != previous_charging
 				if battery_changed or charging_changed:
+					logger.info("Blackout update battery_changed=%s charging_changed=%s", battery_changed, charging_changed)
 					state.internet_down_battery = current_battery if current_battery is not None else previous_battery
 					state.internet_down_charging = current_charging if current_charging is not None else previous_charging
 					detail_parts = []
@@ -448,16 +505,20 @@ def monitor_loop(state: BotState) -> None:
 		except Exception as exc:
 			logger.exception("Errore nel monitoraggio: %s", exc)
 
+		logger.debug("Monitor cycle sleeping for %s seconds", MONITOR_INTERVAL_SECONDS)
 		time.sleep(MONITOR_INTERVAL_SECONDS)
 
 
 def main() -> None:
+	logger.info("CorrenteBot starting")
 	state = load_state()
 	logger.info("Bot avviato. Chat registrate: %s", sorted(state.chat_ids))
 
 	monitor_thread = threading.Thread(target=monitor_loop, args=(state,), daemon=True)
+	logger.info("Starting monitor thread")
 	monitor_thread.start()
 
+	logger.info("Entering Telegram poll loop")
 	telegram_poll_loop(state)
 
 
